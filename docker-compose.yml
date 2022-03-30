@@ -1,0 +1,86 @@
+version: '3.6'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    networks:
+      - broker
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    networks:
+      - broker
+    depends_on:
+      - zookeeper
+    volumes:
+      - ./scripts:/home/appuser/scripts
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAKFA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "nc", "-vz", "localhost", "9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+
+  analytics:
+    build:
+      context: .
+      target: backend
+      dockerfile: apps/analytics/Dockerfile
+    entrypoint: /bin/sh /scripts/health.sh 'bundle exec puma -C config/puma.rb'
+    depends_on:
+      - kafka
+    networks:
+      - broker
+      - internal
+    volumes:
+      - ./apps/analytics:/app
+      - ./scripts/health.sh:/scripts/health.sh
+    environment:
+      KAFKA_SERVICE: kafka:29092
+      KAFKA_TOPIC_CONSUMER: analytics
+
+  greetings:
+    build:
+      context: .
+      dockerfile: apps/greetings/Dockerfile
+    # entrypoint: /bin/sh /scripts/health.sh './greetings'
+    depends_on:
+      - kafka
+    networks:
+      - broker
+      - internal
+    volumes:
+      - ./apps/greetings:/app
+      - ./scripts/health.sh:/scripts/health.sh
+    environment:
+      KAFKA_SERVICE: kafka:29092
+      KAFKA_TOPIC_PRODUCER: analytics
+
+  proxy:
+    image: jwilder/nginx-proxy
+    networks:
+      - proxy
+      - internal
+    depends_on:
+      - greetings
+      - analytics
+    ports:
+      - 8080:80
+    volumes:
+      - ./proxy/apps.conf:/etc/nginx/conf.d/apps.conf
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+
+networks:
+  broker:
+  internal:
+  proxy:
+    driver: bridge
